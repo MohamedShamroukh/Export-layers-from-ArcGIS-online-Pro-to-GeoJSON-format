@@ -1,0 +1,113 @@
+"""
+ArcGIS Pro Layer Exporter
+Export layers from ArcGIS Pro to GeoJSON format
+
+Author: Mohamed Shamroukh
+Date: February 2026
+License: MIT
+"""
+
+import arcpy
+import os
+
+# =============================================================================
+# USER CONFIGURATION
+# =============================================================================
+
+# Set the name of the layer you want to export (must be in the Contents pane)
+input_layer_name = "layer name" #change 
+
+# Set the output folder path where you want to save the GeoJSON
+output_folder = r"#############################################"
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+
+
+def export_layer_to_geojson(layer_name, output_path):
+    """
+    Export a layer from ArcGIS Pro to GeoJSON format
+    
+    Parameters:
+    -----------
+    layer_name : str
+        Name of the layer in the Contents pane
+    output_path : str
+        Destination folder path for the output
+        
+    Returns:
+    --------
+    str : Path to the exported file, or None if failed
+    """
+    try:
+        # Get the current ArcGIS Pro project
+        aprx = arcpy.mp.ArcGISProject("CURRENT")
+        active_map = aprx.activeMap
+        
+        if active_map is None:
+            print("Error: No active map found. Please open a map in your project.")
+            return None
+        
+        # Find the layer in the map
+        layer_to_export = None
+        for lyr in active_map.listLayers():
+            if lyr.name == layer_name:
+                layer_to_export = lyr
+                break
+        
+        if not layer_to_export:
+            print(f"Error: Layer named '{layer_name}' not found in the active map.")
+            print("\nAvailable layers:")
+            for lyr in active_map.listLayers():
+                print(f"  - {lyr.name}")
+            return None
+        
+        # Set output filename
+        output_filename = f"{layer_to_export.name}.geojson"
+        output_geojson_path = os.path.join(output_path, output_filename)
+        
+        # Create output folder if it doesn't exist
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+            print(f"Created output folder: {output_path}")
+        
+        print(f"Exporting layer '{layer_name}' to GeoJSON...")
+        
+        # Export to GeoJSON
+        arcpy.conversion.FeaturesToJSON(
+            in_features=layer_to_export,
+            out_json_file=output_geojson_path,
+            format_json="FORMATTED",
+            geoJSON="GEOJSON"
+        )
+        
+        print("-" * 50)
+        print("✓ Export successful!")
+        print(f"Layer '{layer_to_export.name}' was exported to:")
+        print(output_geojson_path)
+        print("-" * 50)
+        
+        return output_geojson_path
+        
+    except arcpy.ExecuteError:
+        print("Geoprocessing Error:")
+        print(arcpy.GetMessages(2))
+        return None
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+if __name__ == "__main__":
+    result = export_layer_to_geojson(input_layer_name, output_folder)
+    
+    if result:
+        print("\nExport completed successfully!")
+    else:
+        print("\nExport failed. Please check the error messages above.")
