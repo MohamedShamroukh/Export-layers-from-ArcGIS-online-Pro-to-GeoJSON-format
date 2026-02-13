@@ -1,7 +1,11 @@
 """
-ArcGIS Pro Layer Exporter - Geometry-Preserving Version
+ArcGIS Pro Layer Exporter - Proper GeoJSON Format
+Export layers with standard GeoJSON geometry format
+
+Author: Mohamed Shamroukh
+Date: February 2026
 """
-# author: Mohamed shamroukh
+
 import arcpy
 import os
 import json
@@ -10,21 +14,92 @@ import json
 # USER CONFIGURATION
 # =============================================================================
 
-input_layer_name = "############"
-output_folder = r"##################################"
+input_layer_name = "####################"
+output_folder = r"C:\Temp\exports" change
 
 # =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+
+
+def esri_to_geojson_geometry(esri_geom):
+    """
+    Convert Esri JSON geometry to GeoJSON geometry format
+    
+    Parameters:
+    -----------
+    esri_geom : dict
+        Esri JSON geometry object
+        
+    Returns:
+    --------
+    dict : GeoJSON geometry object
+    """
+    if not esri_geom:
+        return None
+    
+    # Point
+    if 'x' in esri_geom and 'y' in esri_geom:
+        return {
+            "type": "Point",
+            "coordinates": [esri_geom['x'], esri_geom['y']]
+        }
+    
+    # Polygon
+    elif 'rings' in esri_geom:
+        return {
+            "type": "Polygon",
+            "coordinates": esri_geom['rings']
+        }
+    
+    # Polyline
+    elif 'paths' in esri_geom:
+        if len(esri_geom['paths']) == 1:
+            return {
+                "type": "LineString",
+                "coordinates": esri_geom['paths'][0]
+            }
+        else:
+            return {
+                "type": "MultiLineString",
+                "coordinates": esri_geom['paths']
+            }
+    
+    # Multipoint
+    elif 'points' in esri_geom:
+        return {
+            "type": "MultiPoint",
+            "coordinates": esri_geom['points']
+        }
+    
+    return None
+
 
 def export_layer_to_geojson(layer_name, output_path):
+    """
+    Export a layer from ArcGIS Pro to proper GeoJSON format
+    
+    Parameters:
+    -----------
+    layer_name : str
+        Name of the layer in the Contents pane
+    output_path : str
+        Destination folder path for the output
+        
+    Returns:
+    --------
+    str : Path to the exported file, or None if failed
+    """
     try:
+        # Get the current ArcGIS Pro project
         aprx = arcpy.mp.ArcGISProject("CURRENT")
         active_map = aprx.activeMap
         
         if active_map is None:
-            print("Error: No active map found.")
+            print("Error: No active map found. Please open a map in your project.")
             return None
         
-        # Find the layer
+        # Find the layer in the map
         layer_to_export = None
         for lyr in active_map.listLayers():
             if lyr.name == layer_name:
@@ -32,88 +107,119 @@ def export_layer_to_geojson(layer_name, output_path):
                 break
         
         if not layer_to_export:
-            print(f"Error: Layer '{layer_name}' not found.")
+            print(f"Error: Layer named '{layer_name}' not found in the active map.")
+            print("\nAvailable layers:")
+            for lyr in active_map.listLayers():
+                print(f"  - {lyr.name}")
             return None
         
-        # Check if it's a feature layer with geometry
+        print(f"Found layer: {layer_name}")
+        
+        # Get spatial reference for CRS info
         desc = arcpy.Describe(layer_to_export)
-        print(f"Data type: {desc.dataType}")
-        print(f"Has OID: {desc.hasOID}")
+        spatial_ref = desc.spatialReference
         
-        # Check if it has a shape field
-        fields = [f.name for f in arcpy.ListFields(layer_to_export)]
-        print(f"Fields: {', '.join(fields)}")
+        # Get field names (excluding system fields)
+        field_names = [f.name for f in arcpy.ListFields(layer_to_export) 
+                      if f.type not in ['Geometry', 'OID'] and 
+                      f.name not in ['Shape', 'Shape_Length', 'Shape_Area', 'Shape__Length', 'Shape__Area']]
         
-        if 'SHAPE' not in fields and 'Shape' not in fields:
-            print("\n❌ ERROR: This layer has no geometry field!")
-            print("This appears to be a table, not a spatial layer.")
-            print("\nTo export spatial data, you need to:")
-            print("1. Join this table to a spatial layer with geometry")
-            print("2. Or ensure the original data source has geometry")
-            return None
+        print(f"Exporting {len(field_names)} attribute fields...")
         
-        # Get data source
-        try:
-            data_source = layer_to_export.dataSource
-            print(f"Data source: {data_source}")
-        except:
-            print("Could not access data source")
+        # Build GeoJSON structure with CRS
+        geojson = {
+            "type": "FeatureCollection",
+            "crs": {
+                "type": "name",
+                "properties": {
+                    "name": f"EPSG:{spatial_ref.factoryCode}" if spatial_ref.factoryCode else "EPSG:4326"
+                }
+            },
+            "features": []
+        }
         
-        # Create output path
-        output_filename = f"{layer_to_export.name}.geojson"
-        output_geojson_path = os.path.join(output_path, output_filename)
+        # Read features with geometry
+        fields = ["SHAPE@JSON"] + field_names
         
+        print("Reading features...")
+        feature_count = 0
+        
+        with arcpy.da.SearchCursor(layer_to_export, fields) as cursor:
+            for row in cursor:
+                geom_json = row[0]
+                
+                if geom_json:
+                    try:
+                        # Parse Esri JSON geometry
+                        esri_geom = json.loads(geom_json)
+                        
+                        # Convert to GeoJSON geometry
+                        geojson_geom = esri_to_geojson_geometry(esri_geom)
+                        
+                        if geojson_geom is None:
+                            print(f"Warning: Could not convert geometry for feature {feature_count + 1}")
+                            continue
+                        
+                        # Build properties dictionary
+                        properties = {}
+                        for i, field_name in enumerate(field_names):
+                            value = row[i + 1]
+                            if value is None:
+                                properties[field_name] = None
+                            elif isinstance(value, (int, float, str, bool)):
+                                properties[field_name] = value
+                            else:
+                                properties[field_name] = str(value)
+                        
+                        # Create GeoJSON feature
+                        feature = {
+                            "type": "Feature",
+                            "geometry": geojson_geom,
+                            "properties": properties
+                        }
+                        
+                        geojson["features"].append(feature)
+                        feature_count += 1
+                        
+                        if feature_count % 10 == 0:
+                            print(f"  Processed {feature_count} features...")
+                            
+                    except json.JSONDecodeError:
+                        print(f"Warning: Could not parse geometry for feature {feature_count + 1}")
+                        continue
+        
+        print(f"\nTotal features exported: {feature_count}")
+        
+        # Create output folder if needed
         if not os.path.exists(output_path):
             os.makedirs(output_path)
         
-        print(f"\nExporting to GeoJSON...")
+        # Generate clean filename
+        output_filename = f"{layer_name.replace(' ', '_').replace('&', 'and')}.geojson"
+        output_geojson_path = os.path.join(output_path, output_filename)
         
-        # METHOD 1: Try CopyFeatures first to preserve geometry
-        temp_gdb = os.path.join(output_path, "temp_export.gdb")
-        temp_fc = os.path.join(temp_gdb, "temp_features")
+        print(f"Writing to file: {output_filename}")
         
-        # Create temp geodatabase
-        if not arcpy.Exists(temp_gdb):
-            arcpy.management.CreateFileGDB(output_path, "temp_export.gdb")
+        # Write GeoJSON to file
+        with open(output_geojson_path, 'w') as f:
+            json.dump(geojson, f, indent=2)
         
-        print("Step 1: Copying features to temp geodatabase...")
-        arcpy.management.CopyFeatures(layer_to_export, temp_fc)
+        # Display results
+        file_size_mb = os.path.getsize(output_geojson_path) / (1024 * 1024)
         
-        # Verify geometry was copied
-        with arcpy.da.SearchCursor(temp_fc, ['SHAPE@']) as cursor:
-            first_row = next(cursor, None)
-            if first_row and first_row[0] is not None:
-                print(f"✓ Geometry preserved: {first_row[0].type}")
-            else:
-                print("⚠️  Warning: No geometry in first feature")
+        print("-" * 60)
+        print("✓ EXPORT SUCCESSFUL!")
+        print("-" * 60)
+        print(f"Features:  {feature_count}")
+        print(f"File size: {file_size_mb:.2f} MB")
+        print(f"Location:  {output_geojson_path}")
         
-        print("Step 2: Converting to GeoJSON...")
-        arcpy.conversion.FeaturesToJSON(
-            in_features=temp_fc,
-            out_json_file=output_geojson_path,
-            format_json="FORMATTED",
-            geoJSON="GEOJSON"
-        )
+        # Show geometry info
+        if geojson["features"]:
+            first_geom_type = geojson["features"][0]["geometry"]["type"]
+            print(f"Geometry:  {first_geom_type}")
         
-        # Clean up
-        arcpy.management.Delete(temp_gdb)
-        
-        # Verify output has geometry
-        with open(output_geojson_path, 'r') as f:
-            data = json.load(f)
-            if 'features' in data and len(data['features']) > 0:
-                first_geom = data['features'][0]['geometry']
-                if first_geom is None:
-                    print("\n❌ ERROR: Geometry is still null in output!")
-                    print("The source layer does not contain spatial data.")
-                else:
-                    print(f"\n✓ SUCCESS! Geometry type: {first_geom['type']}")
-                    print(f"Features exported: {len(data['features'])}")
-        
-        print("-" * 50)
-        print("Export complete:")
-        print(output_geojson_path)
-        print("-" * 50)
+        print("-" * 60)
         
         return output_geojson_path
         
@@ -123,11 +229,21 @@ def export_layer_to_geojson(layer_name, output_path):
         return None
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"An error occurred: {e}")
         import traceback
         traceback.print_exc()
         return None
 
 
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
     result = export_layer_to_geojson(input_layer_name, output_folder)
+    
+    if result:
+        print("\n✅ Export completed successfully!")
+        print("The GeoJSON file can now be imported into other GIS software.")
+    else:
+        print("\nExport failed. Please check the error messages above.")
