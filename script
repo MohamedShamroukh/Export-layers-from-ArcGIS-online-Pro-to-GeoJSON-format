@@ -1,55 +1,30 @@
 """
-ArcGIS Pro Layer Exporter
-Export layers from ArcGIS Pro to GeoJSON format
-
-Author: Mohamed Shamroukh
-Date: February 2026
-License: MIT
+ArcGIS Pro Layer Exporter - Geometry-Preserving Version
 """
-
+# author: Mohamed shamroukh
 import arcpy
 import os
+import json
 
 # =============================================================================
 # USER CONFIGURATION
 # =============================================================================
 
-# Set the name of the layer you want to export (must be in the Contents pane)
-input_layer_name = "layer name" #change 
-
-# Set the output folder path where you want to save the GeoJSON
-output_folder = r"#############################################"
+input_layer_name = "############"
+output_folder = r"##################################"
 
 # =============================================================================
-# END OF CONFIGURATION
-# =============================================================================
-
 
 def export_layer_to_geojson(layer_name, output_path):
-    """
-    Export a layer from ArcGIS Pro to GeoJSON format
-    
-    Parameters:
-    -----------
-    layer_name : str
-        Name of the layer in the Contents pane
-    output_path : str
-        Destination folder path for the output
-        
-    Returns:
-    --------
-    str : Path to the exported file, or None if failed
-    """
     try:
-        # Get the current ArcGIS Pro project
         aprx = arcpy.mp.ArcGISProject("CURRENT")
         active_map = aprx.activeMap
         
         if active_map is None:
-            print("Error: No active map found. Please open a map in your project.")
+            print("Error: No active map found.")
             return None
         
-        # Find the layer in the map
+        # Find the layer
         layer_to_export = None
         for lyr in active_map.listLayers():
             if lyr.name == layer_name:
@@ -57,34 +32,86 @@ def export_layer_to_geojson(layer_name, output_path):
                 break
         
         if not layer_to_export:
-            print(f"Error: Layer named '{layer_name}' not found in the active map.")
-            print("\nAvailable layers:")
-            for lyr in active_map.listLayers():
-                print(f"  - {lyr.name}")
+            print(f"Error: Layer '{layer_name}' not found.")
             return None
         
-        # Set output filename
+        # Check if it's a feature layer with geometry
+        desc = arcpy.Describe(layer_to_export)
+        print(f"Data type: {desc.dataType}")
+        print(f"Has OID: {desc.hasOID}")
+        
+        # Check if it has a shape field
+        fields = [f.name for f in arcpy.ListFields(layer_to_export)]
+        print(f"Fields: {', '.join(fields)}")
+        
+        if 'SHAPE' not in fields and 'Shape' not in fields:
+            print("\n❌ ERROR: This layer has no geometry field!")
+            print("This appears to be a table, not a spatial layer.")
+            print("\nTo export spatial data, you need to:")
+            print("1. Join this table to a spatial layer with geometry")
+            print("2. Or ensure the original data source has geometry")
+            return None
+        
+        # Get data source
+        try:
+            data_source = layer_to_export.dataSource
+            print(f"Data source: {data_source}")
+        except:
+            print("Could not access data source")
+        
+        # Create output path
         output_filename = f"{layer_to_export.name}.geojson"
         output_geojson_path = os.path.join(output_path, output_filename)
         
-        # Create output folder if it doesn't exist
         if not os.path.exists(output_path):
             os.makedirs(output_path)
-            print(f"Created output folder: {output_path}")
         
-        print(f"Exporting layer '{layer_name}' to GeoJSON...")
+        print(f"\nExporting to GeoJSON...")
         
-        # Export to GeoJSON
+        # METHOD 1: Try CopyFeatures first to preserve geometry
+        temp_gdb = os.path.join(output_path, "temp_export.gdb")
+        temp_fc = os.path.join(temp_gdb, "temp_features")
+        
+        # Create temp geodatabase
+        if not arcpy.Exists(temp_gdb):
+            arcpy.management.CreateFileGDB(output_path, "temp_export.gdb")
+        
+        print("Step 1: Copying features to temp geodatabase...")
+        arcpy.management.CopyFeatures(layer_to_export, temp_fc)
+        
+        # Verify geometry was copied
+        with arcpy.da.SearchCursor(temp_fc, ['SHAPE@']) as cursor:
+            first_row = next(cursor, None)
+            if first_row and first_row[0] is not None:
+                print(f"✓ Geometry preserved: {first_row[0].type}")
+            else:
+                print("⚠️  Warning: No geometry in first feature")
+        
+        print("Step 2: Converting to GeoJSON...")
         arcpy.conversion.FeaturesToJSON(
-            in_features=layer_to_export,
+            in_features=temp_fc,
             out_json_file=output_geojson_path,
             format_json="FORMATTED",
             geoJSON="GEOJSON"
         )
         
+        # Clean up
+        arcpy.management.Delete(temp_gdb)
+        
+        # Verify output has geometry
+        with open(output_geojson_path, 'r') as f:
+            data = json.load(f)
+            if 'features' in data and len(data['features']) > 0:
+                first_geom = data['features'][0]['geometry']
+                if first_geom is None:
+                    print("\n❌ ERROR: Geometry is still null in output!")
+                    print("The source layer does not contain spatial data.")
+                else:
+                    print(f"\n✓ SUCCESS! Geometry type: {first_geom['type']}")
+                    print(f"Features exported: {len(data['features'])}")
+        
         print("-" * 50)
-        print("✓ Export successful!")
-        print(f"Layer '{layer_to_export.name}' was exported to:")
+        print("Export complete:")
         print(output_geojson_path)
         print("-" * 50)
         
@@ -96,18 +123,11 @@ def export_layer_to_geojson(layer_name, output_path):
         return None
         
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
-# =============================================================================
-# MAIN EXECUTION
-# =============================================================================
-
 if __name__ == "__main__":
     result = export_layer_to_geojson(input_layer_name, output_folder)
-    
-    if result:
-        print("\nExport completed successfully!")
-    else:
-        print("\nExport failed. Please check the error messages above.")
